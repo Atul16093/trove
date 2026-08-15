@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: trove-postgres
+    environment:
+      POSTGRES_USER: trove
+      POSTGRES_PASSWORD: trove
+      POSTGRES_DB: trove
+    ports:
+      - "5432:5432"
+    volumes:
+      - trove_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trove"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  trove_pgdata:

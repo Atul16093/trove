@@ -1,0 +1,49 @@
+# --- dependencies ---
+node_modules/
+.pnp/
+.pnp.js
+.yarn/
+
+# --- environment / secrets ---
+# Ignore every real env file, at the root and in backend/ and frontend/.
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+secrets.json
+
+# --- build output ---
+dist/
+build/
+out/
+.next/
+.turbo/
+*.tsbuildinfo
+next-env.d.ts.timestamp
+
+# --- runtime / user data ---
+storage/
+uploads/
+tmp/
+
+# --- logs ---
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- test / coverage ---
+coverage/
+.nyc_output/
+
+# --- editor & OS ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp

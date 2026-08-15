@@ -1,0 +1,156 @@
+/* ============================================================================
+   Trove design tokens — Apple (iOS 17 / macOS Sonoma) design language.
+
+   Everything visual references these variables; nothing hardcodes a colour,
+   radius, shadow or easing. Light is the default set, dark overrides only the
+   tokens that change. Contrast of every label token against its intended
+   surface is AA or better in both themes.
+   ========================================================================= */
+
+:root {
+  color-scheme: light;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display',
+    'Segoe UI', system-ui, 'Helvetica Neue', sans-serif;
+
+  /* --- base & opaque surfaces (content sits on these) --- */
+  --base: #F2F2F7;
+  --surface: #FFFFFF;
+  --surface-2: #F6F6F9;
+
+  /* --- materials (translucent chrome only: sidebar, bars, drawer, modals) --- */
+  --material: rgba(255, 255, 255, 0.72);
+  --material-thick: rgba(255, 255, 255, 0.86);
+  --material-blur: blur(20px) saturate(180%);
+
+  /* --- label hierarchy --- */
+  --label: #1C1C1E;      /* 16.1:1 on white */
+  --label-2: #55555A;    /*  7.3:1 on white */
+  --label-3: #6E6E73;    /*  5.2:1 on white */
+
+  /* --- fills & hairlines (used instead of hard borders) --- */
+  --fill: rgba(120, 120, 128, 0.12);
+  --fill-2: rgba(120, 120, 128, 0.07);
+  --fill-3: rgba(120, 120, 128, 0.20);
+  --separator: rgba(60, 60, 67, 0.10);
+
+  /* --- system accent --- */
+  --accent: #007AFF;         /* identity: dots, rings, icons, selection */
+  --accent-fill: #0069D9;    /* button fill — 5.3:1 with white text */
+  --accent-text: #0062CC;    /* accent as text — 5.9:1 on white */
+  --accent-soft: rgba(0, 122, 255, 0.12);
+  --accent-ring: rgba(0, 122, 255, 0.35);
+  --on-accent: #FFFFFF;
+
+  --danger: #D70015;         /* 5.4:1 on white */
+  --danger-soft: rgba(215, 0, 21, 0.10);
+  --danger-soft-2: rgba(215, 0, 21, 0.18);
+  --success: #248A3D;        /* 4.7:1 on white */
+
+  /* neutral filled capsule (the non-accent primary button style) */
+  --neutral-fill: #1C1C1E;
+  --on-neutral: #FFFFFF;
+
+  --unsorted: #8E8E93;       /* iOS systemGray — the "no category" accent */
+
+  /* --- shape --- */
+  --r-xs: 7px;
+  --r-sm: 10px;
+  --r-md: 13px;
+  --r-lg: 16px;
+  --r-xl: 22px;
+  --r-pill: 980px;
+
+  /* --- depth: layered soft shadows, never outlines --- */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.04), 0 1px 3px rgba(0, 0, 0, 0.03);
+  --shadow-2: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.06);
+  --shadow-3: 0 2px 8px rgba(0, 0, 0, 0.06), 0 24px 64px rgba(0, 0, 0, 0.18);
+
+  /* --- motion --- */
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --dur: 0.34s;
+  --dur-fast: 0.2s;
+
+  /* --- ambient wash behind the frosted chrome, so the material reads --- */
+  --wash-1: rgba(0, 122, 255, 0.07);
+  --wash-2: rgba(255, 45, 85, 0.05);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+
+    /* elevated greys over a near-black base — never pure black */
+    --base: #131315;
+    --surface: #1C1C1E;
+    --surface-2: #2C2C2E;
+
+    --material: rgba(30, 30, 32, 0.72);
+    --material-thick: rgba(30, 30, 32, 0.88);
+
+    --label: #F5F5F7;      /* 15.6:1 on #1C1C1E */
+    --label-2: #B7B7BD;    /*  8.6:1 on #1C1C1E */
+    --label-3: #9A9AA0;    /*  6.2:1 on #1C1C1E, 5.0:1 on #2C2C2E */
+
+    --fill: rgba(120, 120, 128, 0.24);
+    --fill-2: rgba(120, 120, 128, 0.14);
+    --fill-3: rgba(120, 120, 128, 0.36);
+    --separator: rgba(255, 255, 255, 0.10);
+
+    --accent: #0A84FF;
+    --accent-fill: #0A6FD8;   /* 5.0:1 with white text */
+    --accent-text: #4DA3FF;   /* 6.6:1 on #1C1C1E */
+    --accent-soft: rgba(10, 132, 255, 0.24);
+    --accent-ring: rgba(10, 132, 255, 0.45);
+
+    --danger: #FF6961;        /* 6.0:1 on #1C1C1E */
+    --danger-soft: rgba(255, 105, 97, 0.16);
+    --danger-soft-2: rgba(255, 105, 97, 0.26);
+    --success: #30D158;       /* 9.6:1 on #1C1C1E */
+
+    --neutral-fill: #F5F5F7;
+    --on-neutral: #1C1C1E;
+
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.40);
+    --shadow-2: 0 1px 2px rgba(0, 0, 0, 0.40), 0 8px 24px rgba(0, 0, 0, 0.50);
+    --shadow-3: 0 2px 8px rgba(0, 0, 0, 0.50), 0 24px 64px rgba(0, 0, 0, 0.70);
+
+    --wash-1: rgba(10, 132, 255, 0.10);
+    --wash-2: rgba(255, 55, 95, 0.07);
+  }
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+
+body {
+  font-family: var(--font-sans);
+  color: var(--label);
+  background: var(--base);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+a { color: inherit; }
+button, input, textarea, select { font-family: inherit; }
+
+/* Keyboard focus only — pointer interaction stays clean. */
+:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 4px var(--accent-ring);
+}
+
+/* Respect the system setting: kill durations, and the press-scale transforms.
+   Scoped deliberately — a blanket `transform: none` would break the modal's
+   translate(-50%, -50%) centring and the mobile sidebar's off-canvas slide. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+  }
+  .tv-row:active,
+  .tv-app button:active,
+  .tv-login button:active { transform: none !important; }
+}

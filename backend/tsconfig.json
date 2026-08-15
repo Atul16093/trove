@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "target": "ES2021",
+    "lib": ["ES2021"],
+    "moduleResolution": "node",
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "strict": false,
+    "strictNullChecks": true,
+    "forceConsistentCasingInFileNames": true,
+    "baseUrl": "./",
+    "paths": { "src/*": ["src/*"] },
+    "outDir": "./dist",
+    "declaration": false,
+    "sourceMap": true
+  },
+  "include": ["src/**/*.ts", "knexfile.ts"],
+  "exclude": ["node_modules", "dist"]
+}
