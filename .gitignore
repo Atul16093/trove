@@ -24,9 +24,17 @@ out/
 next-env.d.ts.timestamp
 
 # --- runtime / user data ---
-storage/
-uploads/
-tmp/
+# Anchored with a leading slash on purpose. A bare `storage/` matches a
+# directory of that name at ANY depth, which also catches the source folder
+# backend/src/modules/storage/ — that is how storage.service.ts got left out of
+# the repo and broke the Railway build. Only the real runtime dirs belong here;
+# nothing under backend/src/ or frontend/ can ever match these.
+/backend/storage/
+/backend/uploads/
+/backend/tmp/
+/storage/
+/uploads/
+/tmp/
 
 # --- logs ---
 *.log
