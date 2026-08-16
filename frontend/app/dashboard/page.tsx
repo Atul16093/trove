@@ -626,6 +626,16 @@ function CategoryManager({ cats, onClose, onChanged, flash }: {
         deleting one of your own moves its items to Other.
       </p>
 
+      {/* above the list: with a dozen categories the list scrolls, and an add
+          row pinned under it would sit below the fold */}
+      <div className="tv-cm-add">
+        <ColorSwatch color={newColor} onPick={setNewColor} />
+        <input className="tv-cm-newname" placeholder="New category name" value={newName} maxLength={120}
+          onChange={(e) => setNewName(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }} />
+        <button className="tv-add" onClick={add} disabled={busy || !newName.trim()}><Plus size={15} /> Add</button>
+      </div>
+
       <div className="tv-cm-list">
         {order.map((c) => (
           <div key={c.uuid}>
@@ -640,7 +650,9 @@ function CategoryManager({ cats, onClose, onChanged, flash }: {
               onDragEnd={() => setDragUuid(null)}
             />
             {confirming === c.uuid && (
-              <div className="tv-cm-confirm">
+              // scroll itself into view — deleting a row near the bottom would
+              // otherwise open a confirmation the user can't see
+              <div className="tv-cm-confirm" ref={(el) => el?.scrollIntoView({ block: 'nearest' })}>
                 <span>Delete &ldquo;{c.name}&rdquo;? {c.count === 0 ? 'It has no items.' : `Its ${c.count} item${c.count === 1 ? '' : 's'} will move to Other.`}</span>
                 <div className="tv-cm-confirm-act">
                   <button className="tv-cm-cancel" onClick={() => setConfirming(null)}>Cancel</button>
@@ -650,14 +662,6 @@ function CategoryManager({ cats, onClose, onChanged, flash }: {
             )}
           </div>
         ))}
-      </div>
-
-      <div className="tv-cm-add">
-        <ColorSwatch color={newColor} onPick={setNewColor} />
-        <input className="tv-cm-newname" placeholder="New category name" value={newName} maxLength={120}
-          onChange={(e) => setNewName(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }} />
-        <button className="tv-add" onClick={add} disabled={busy || !newName.trim()}><Plus size={15} /> Add</button>
       </div>
     </div>
   );
@@ -806,12 +810,16 @@ const CSS = `
    translucent material; content rows are solid and opaque.
    ========================================================================= */
 
-.tv-boot{display:flex;align-items:center;justify-content:center;height:100vh;
+.tv-boot{display:flex;align-items:center;justify-content:center;height:100vh;height:100dvh;
   background:var(--base);color:var(--label-3);font-family:var(--font-sans);font-size:15px;}
 
 .tv-app{
   --top-h:66px; --stat-h:44px; --side-w:264px;
-  position:relative;display:flex;height:100vh;overflow:hidden;
+  /* dvh, not vh: on phones 100vh is the *large* viewport (browser chrome
+     retracted), so a 100vh shell is taller than the screen. Its scrollers then
+     believe they have room they don't, their scroll range collapses to zero,
+     and whatever sits at the bottom becomes unreachable. vh stays as a fallback. */
+  position:relative;display:flex;height:100vh;height:100dvh;overflow:hidden;
   font-family:var(--font-sans);font-size:14px;color:var(--label);letter-spacing:-0.01em;
   /* the ambient wash is what the frosted chrome actually blurs */
   background:
@@ -830,7 +838,7 @@ const CSS = `
 /* overflow-y:auto so a long category list can never clip the Telegram card
    or Sign out off the bottom edge */
 .tv-side{position:relative;z-index:3;width:var(--side-w);flex-shrink:0;display:flex;flex-direction:column;
-  padding:16px 12px 14px;overflow-y:auto;overscroll-behavior:contain;
+  padding:16px 12px 14px;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;
   background:var(--material);
   -webkit-backdrop-filter:var(--material-blur);backdrop-filter:var(--material-blur);
   box-shadow:inset -1px 0 0 var(--separator);}
@@ -979,7 +987,7 @@ const CSS = `
 .tv-chipnew-input:focus{background:var(--surface);box-shadow:0 0 0 3px var(--accent-ring);}
 
 /* ---------- category manager ---------- */
-.tv-modal-wide{width:560px;max-height:84vh;overflow-y:auto;}
+.tv-modal-wide{width:560px;max-height:84vh;max-height:84dvh;overflow-y:auto;-webkit-overflow-scrolling:touch;}
 .tv-cm-list{display:flex;flex-direction:column;gap:4px;margin-top:4px;}
 .tv-cm-row{display:flex;align-items:center;gap:10px;padding:7px 8px;border-radius:var(--r-md);
   transition:background var(--dur-fast) var(--ease),opacity var(--dur-fast) var(--ease);}
@@ -1009,8 +1017,8 @@ const CSS = `
   color:#fff;font-size:12.5px;font-weight:600;}
 .tv-cm-confirmdel:hover{filter:brightness(1.08);}
 .tv-cm-confirmdel:disabled{opacity:.55;cursor:default;}
-.tv-cm-add{display:flex;align-items:center;gap:10px;margin-top:18px;padding-top:16px;
-  border-top:1px solid var(--separator);}
+.tv-cm-add{display:flex;align-items:center;gap:10px;margin-bottom:16px;padding-bottom:16px;
+  border-bottom:1px solid var(--separator);}
 .tv-cm-newname{flex:1;min-width:0;height:40px;padding:0 14px;border:none;border-radius:var(--r-md);
   background:var(--fill-2);font-size:14px;color:var(--label);outline:none;
   transition:background var(--dur-fast) var(--ease),box-shadow var(--dur-fast) var(--ease);}
@@ -1052,7 +1060,7 @@ const CSS = `
   animation:tv-fade var(--dur-fast) var(--ease) both;}
 
 .tv-drawer{position:absolute;z-index:6;top:12px;right:12px;bottom:12px;width:420px;max-width:calc(100% - 24px);
-  padding:26px;overflow-y:auto;border-radius:var(--r-xl);
+  padding:26px;overflow-y:auto;-webkit-overflow-scrolling:touch;border-radius:var(--r-xl);
   background:var(--material-thick);
   -webkit-backdrop-filter:var(--material-blur);backdrop-filter:var(--material-blur);
   box-shadow:var(--shadow-3);animation:tv-drawer-in var(--dur) var(--ease) both;}

@@ -7,21 +7,43 @@ export const clearToken = () => localStorage.removeItem(TOKEN_KEY);
 
 export interface ApiResponse<T = any> { success: boolean; code: number; message: string; data: T | null; }
 
+/**
+ * Always resolves to an ApiResponse — it never rejects.
+ *
+ * A rejected fetch (API down, DNS/LAN-IP change, CORS refusal) or a non-JSON
+ * body used to throw straight out of here, so callers doing
+ * `setLoading(true); await api.x(); setLoading(false)` were left spinning
+ * forever with nothing on screen. Failing soft means every caller shows a real
+ * message instead of hanging.
+ */
 async function request<T>(path: string, opts: RequestInit = {}): Promise<ApiResponse<T>> {
   const token = getToken();
-  const res = await fetch(`${BASE}${path}`, {
-    ...opts,
-    headers: {
-      'content-type': 'application/json',
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-      ...(opts.headers || {}),
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      ...opts,
+      headers: {
+        'content-type': 'application/json',
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...(opts.headers || {}),
+      },
+    });
+  } catch (e) {
+    console.error(`[api] ${path} — request failed against ${BASE}`, e);
+    return { success: false, code: 0, data: null, message: `Can't reach the server at ${BASE}. Is the API running?` };
+  }
+
   if (res.status === 401 && typeof window !== 'undefined' && !path.startsWith('/auth')) {
     clearToken();
     window.location.href = '/login';
   }
-  return res.json();
+
+  try {
+    return await res.json();
+  } catch (e) {
+    console.error(`[api] ${path} — HTTP ${res.status}, body was not JSON`, e);
+    return { success: false, code: res.status, data: null, message: `Unexpected response from the server (HTTP ${res.status}).` };
+  }
 }
 
 export interface Category {

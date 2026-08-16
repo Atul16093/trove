@@ -5,9 +5,11 @@ export const metadata: Metadata = {
   title: 'Trove — save anything, find everything',
   description: 'Your saved links, organized for you, findable in seconds.',
   applicationName: 'Trove',
-  // app/icon.svg is picked up by the app-router file convention; naming it here
-  // keeps the type explicit for crawlers that prefer it.
-  icons: { icon: [{ url: '/icon.svg', type: 'image/svg+xml' }] },
+  // No `icons` key on purpose: app/icon.svg and app/apple-icon.png are emitted
+  // by the app-router file conventions, and declaring `icons` here would
+  // override that set — which silently dropped the apple-touch-icon link.
+  // installed on iOS: run without Safari chrome and title the home-screen entry
+  appleWebApp: { capable: true, title: 'Trove', statusBarStyle: 'default' },
 };
 
 /** Matches the --base token so browser chrome tracks the app's theme. */
