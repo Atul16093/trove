@@ -3,6 +3,7 @@ import { ItemQuery } from '../../models/queries/item.query';
 import { CategoryQuery } from '../../models/queries/category.query';
 import { CATEGORY_SLUGS, FALLBACK_CATEGORY_SLUG } from '../../enums/default-categories';
 import { unwrapRedirect, isInstagramUrl, displayTitleFor, looksLikeUrl } from '../../common/utils/url.util';
+import { AiConfig, complete, resolveAiConfig } from './ai-provider';
 
 interface Metadata { title: string | null; description: string | null; image: string | null; }
 interface Classification { slug: string; summary: string; tags: string[]; }
@@ -10,18 +11,20 @@ interface Classification { slug: string; summary: string; tags: string[]; }
 const EMPTY_META: Metadata = { title: null, description: null, image: null };
 
 /**
- * Enrichment: fetch link metadata, then classify with Claude.
- * If ANTHROPIC_API_KEY is unset, a keyword fallback runs so the app still works
+ * Enrichment: fetch link metadata, then classify with an LLM.
+ * The provider is env-configurable (see ai-provider.ts). If no key is set — or the
+ * call fails for any reason — a keyword fallback runs so the app still works
  * end-to-end. In production this is queued (BullMQ) — here it runs async inline.
  *
  * Invariant: an item that enters process() always leaves it `ready` with a
  * non-null category_id. Enrichment is best-effort decoration — a dead metadata
- * fetch, a failed Claude call or a login-wall page must never strand a saved
+ * fetch, a failed AI call or a login-wall page must never strand a saved
  * link where the dashboard can't see it.
  */
 @Injectable()
 export class EnrichmentService {
   private readonly logger = new Logger(EnrichmentService.name);
+  private readonly warned = new Set<string>();
 
   constructor(private readonly items: ItemQuery, private readonly categories: CategoryQuery) {}
 
@@ -173,32 +176,69 @@ export class EnrichmentService {
     return s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
   }
 
+  /**
+   * Ask the configured provider to categorize the link; fall back to keywords on any
+   * failure. Config is resolved per call so an env change lands on the next restart
+   * without special-casing, and a bad AI_PROVIDER degrades instead of crashing boot.
+   */
   private async classify(url: string, meta: Metadata, caption: string | null): Promise<Classification> {
-    const key = process.env.ANTHROPIC_API_KEY;
-    if (!key) return this.keywordFallback(url, meta, caption);
+    let cfg: AiConfig | null = null;
     try {
-      const context = [`URL: ${url}`, meta.title && `Title: ${meta.title}`, meta.description && `Description: ${meta.description}`, caption && `Caption: ${caption}`]
-        .filter(Boolean).join('\n');
-      const prompt = `You categorize saved links. Reply with ONLY a JSON object, no prose, no markdown fences.
+      cfg = resolveAiConfig();
+    } catch (e: any) {
+      this.warnOnce(`ai config: ${e.message} — using keyword fallback`);
+    }
+    if (!cfg) return this.keywordFallback(url, meta, caption);
+
+    try {
+      const text = await complete(cfg, this.classifyPrompt(url, meta, caption), { maxTokens: 300, timeoutMs: 15000 });
+      return this.parseClassification(text);
+    } catch (e: any) {
+      // Rate limits and bad keys look identical from the item's point of view, but not
+      // from the operator's — log once per distinct message so a misconfigured free-tier
+      // key is visible without flooding the log on every save.
+      this.warnOnce(`ai classify (${cfg.provider}/${cfg.model}) failed: ${e.message}`);
+      return this.keywordFallback(url, meta, caption);
+    }
+  }
+
+  /** Identical across providers — the JSON contract is the abstraction boundary. */
+  private classifyPrompt(url: string, meta: Metadata, caption: string | null): string {
+    const context = [`URL: ${url}`, meta.title && `Title: ${meta.title}`, meta.description && `Description: ${meta.description}`, caption && `Caption: ${caption}`]
+      .filter(Boolean).join('\n');
+    return `You categorize saved links. Reply with ONLY a JSON object, no prose, no markdown fences.
 Schema: {"category": one of ${JSON.stringify(CATEGORY_SLUGS)}, "summary": "one concise sentence, max 20 words", "tags": ["2-4 short lowercase tags"]}
 If nothing fits, use "${FALLBACK_CATEGORY_SLUG}".
 
 Link:
 ${context}`;
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({ model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6', max_tokens: 300, messages: [{ role: 'user', content: prompt }] }),
-        signal: AbortSignal.timeout(15000),
-      });
-      const data: any = await res.json();
-      const text = (data?.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('').trim();
-      const json = JSON.parse(text.replace(/```json|```/g, '').trim());
-      const slug = CATEGORY_SLUGS.includes(json.category) ? json.category : FALLBACK_CATEGORY_SLUG;
-      return { slug, summary: String(json.summary || '').slice(0, 500), tags: Array.isArray(json.tags) ? json.tags.slice(0, 4).map(String) : [] };
-    } catch (e) {
-      return this.keywordFallback(url, meta, caption);
-    }
+  }
+
+  /**
+   * Small models wrap JSON in fences or a sentence of preamble far more often than
+   * Claude does, so recover the first {...} block rather than trusting the whole string.
+   */
+  private parseClassification(text: string): Classification {
+    const cleaned = text.replace(/```(?:json)?/gi, '').trim();
+    const start = cleaned.indexOf('{');
+    const end = cleaned.lastIndexOf('}');
+    if (start === -1 || end <= start) throw new Error('no JSON object in completion');
+    const json = JSON.parse(cleaned.slice(start, end + 1));
+
+    const slug = CATEGORY_SLUGS.includes(json.category) ? json.category : FALLBACK_CATEGORY_SLUG;
+    return {
+      slug,
+      summary: String(json.summary || '').slice(0, 500),
+      tags: Array.isArray(json.tags) ? json.tags.slice(0, 4).map(String) : [],
+    };
+  }
+
+  /** Dedupe repeated provider errors — one bad key would otherwise log on every item. */
+  private warnOnce(message: string): void {
+    if (this.warned.has(message)) return;
+    if (this.warned.size > 50) this.warned.clear();
+    this.warned.add(message);
+    this.logger.warn(message);
   }
 
   private keywordFallback(url: string, meta: Metadata, caption: string | null): Classification {

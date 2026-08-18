@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { randomBytes } from 'crypto';
 import { Telegraf } from 'telegraf';
 import { TelegramQuery } from '../../models/queries/telegram.query';
@@ -9,10 +9,12 @@ const URL_RE = /(https?:\/\/[^\s]+)/i;
 /**
  * Telegram capture: links the bot to a Trove account via a one-time token,
  * then turns every forwarded link into an ingested item (capture_source=telegram).
- * Uses long polling so it runs locally without a public webhook URL.
+ * Uses long polling so it runs locally without a public webhook URL. Telegram allows
+ * only one poller per bot token, so set TELEGRAM_MODE=off in any environment that must
+ * not consume updates (e.g. local dev while the deployed instance owns the bot).
  */
 @Injectable()
-export class TelegramService implements OnModuleInit {
+export class TelegramService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(TelegramService.name);
   private bot: Telegraf | null = null;
 
@@ -21,6 +23,10 @@ export class TelegramService implements OnModuleInit {
   onModuleInit(): void {
     const token = process.env.TELEGRAM_BOT_TOKEN;
     if (!token) { this.logger.warn('TELEGRAM_BOT_TOKEN unset — bot disabled (web capture still works)'); return; }
+    if ((process.env.TELEGRAM_MODE || 'polling').toLowerCase() === 'off') {
+      this.logger.log('TELEGRAM_MODE=off — bot polling disabled (API endpoints still work)');
+      return;
+    }
     this.bot = new Telegraf(token);
 
     this.bot.start(async (ctx) => {
@@ -69,7 +75,25 @@ export class TelegramService implements OnModuleInit {
       await ctx.reply('Saved ✅');
     });
 
-    this.bot.launch().then(() => this.logger.log('Telegram bot started (polling)'));
+    // launch() resolves only when the bot stops, so log before awaiting and catch failures
+    // here — an uncaught 409 (another instance polling the same token) would otherwise
+    // surface as an unhandled rejection.
+    this.logger.log('Telegram bot starting (polling)');
+    this.bot.launch({ dropPendingUpdates: true }).catch((e: any) => {
+      this.bot = null;
+      if (String(e?.message).includes('409')) {
+        this.logger.error(
+          'Telegram 409: another instance is polling this bot token (check your deployed backend). ' +
+          'Set TELEGRAM_MODE=off here or use a separate dev bot token.',
+        );
+        return;
+      }
+      this.logger.error(`Telegram bot stopped: ${e?.message}`);
+    });
+  }
+
+  onModuleDestroy(): void {
+    this.bot?.stop('SIGTERM');
   }
 
   private largestPhoto(photos: any[]): any {

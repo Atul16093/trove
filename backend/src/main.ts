@@ -19,6 +19,9 @@ async function bootstrap() {
     },
     credentials: true,
   });
+  // lets TelegramService stop long polling on SIGTERM/restart instead of leaving a
+  // second getUpdates consumer alive (Telegram 409s when two poll the same token)
+  app.enableShutdownHooks();
   const port = Number(process.env.PORT || 4000);
   await app.listen(port, '0.0.0.0');
   new Logger('Bootstrap').log(`Trove API listening on http://0.0.0.0:${port}/api`);
