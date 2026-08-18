@@ -125,9 +125,28 @@ export function isInstagramUrl(url: string): boolean {
 }
 
 /**
+ * Retailers that bot-block scrapers hard enough that we routinely have no title.
+ * A named label ("Amazon product") reads far better on the dashboard than the bare
+ * host, and much better than the block page's own title. Matched on the registrable
+ * host so amazon.in / amazon.co.uk / smile.amazon.com all land on the same label.
+ */
+const MERCHANT_LABELS: { match: RegExp; label: string }[] = [
+  { match: /(^|\.)(amazon|amzn)\./i, label: 'Amazon product' },
+  { match: /(^|\.)(flipkart|fkrt)\./i, label: 'Flipkart product' },
+  { match: /(^|\.)myntra\./i, label: 'Myntra product' },
+];
+
+/** "Amazon product" for a known retailer host, else null. */
+export function merchantLabelFor(host: string | null): string | null {
+  if (!host) return null;
+  return MERCHANT_LABELS.find((m) => m.match.test(host))?.label ?? null;
+}
+
+/**
  * A human-readable title for an item with no fetched title — never the raw URL.
- * Instagram gets a shape-aware label ("Instagram reel"); everything else falls
- * back to the bare source domain ("jobs24x.com").
+ * Instagram gets a shape-aware label ("Instagram reel"), bot-blocked retailers get
+ * a product label ("Amazon product"); everything else falls back to the bare source
+ * domain ("jobs24x.com").
  */
 export function displayTitleFor(url: string | null, sourceDomain: string | null): string {
   const link = url ? unwrapRedirect(url) : null;
@@ -146,5 +165,5 @@ export function displayTitleFor(url: string | null, sourceDomain: string | null)
     return segment ? `Instagram · @${segment}` : 'Instagram';
   }
 
-  return host || 'Saved link';
+  return merchantLabelFor(host) || host || 'Saved link';
 }

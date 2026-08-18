@@ -11,6 +11,35 @@ interface Classification { slug: string; summary: string; tags: string[]; }
 const EMPTY_META: Metadata = { title: null, description: null, image: null };
 
 /**
+ * Titles that mean "you got a block page, not the content". Amazon answers scrapers
+ * with "503 - Service Unavailable Error" or a Robot Check; saving that as the item
+ * title makes a perfectly good save look broken.
+ *
+ * `\b503\b` is bounded so it can't fire on "1503"; a legitimate title like "Room 503"
+ * would still be dropped, but the cost is only a fall back to "Amazon product" /
+ * the source domain, which is the right shape of failure.
+ */
+const BLOCKED_TITLE_PATTERNS: RegExp[] = [
+  /\b503\b/,
+  /service unavailable/i,
+  /access denied/i,
+  /robot check/i,
+  /captcha/i,
+  /enter the characters you see/i,
+  /sorry, we just need to make sure/i,
+  /are you a (?:human|robot)/i,
+  /just a moment/i,          // Cloudflare interstitial
+  /attention required/i,     // Cloudflare block
+];
+
+/** Looks like a real browser; enough for marginal sites, nowhere near enough for Amazon. */
+const BROWSER_HEADERS: Record<string, string> = {
+  'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+  accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+  'accept-language': 'en-US,en;q=0.9',
+};
+
+/**
  * Enrichment: fetch link metadata, then classify with an LLM.
  * The provider is env-configurable (see ai-provider.ts). If no key is set — or the
  * call fails for any reason — a keyword fallback runs so the app still works
@@ -21,6 +50,13 @@ const EMPTY_META: Metadata = { title: null, description: null, image: null };
  * fetch, a failed AI call or a login-wall page must never strand a saved
  * link where the dashboard can't see it.
  */
+/** True for a title that came from a bot-block / error page rather than the content. */
+function isBlockedTitle(title: string | null): boolean {
+  if (!title) return false;
+  const t = title.trim();
+  return !!t && BLOCKED_TITLE_PATTERNS.some((re) => re.test(t));
+}
+
 @Injectable()
 export class EnrichmentService {
   private readonly logger = new Logger(EnrichmentService.name);
@@ -62,7 +98,9 @@ export class EnrichmentService {
     // Columns are bounded (title/summary 512, image_url 1024) — clamp so a long
     // value can't turn a successful enrichment into a failed write. The fallback
     // is a derived label, never the raw URL: that renders as a wall of tracking junk.
-    const keptTitle = item.title && !looksLikeUrl(item.title) ? item.title : null;
+    // Also reject a stored block-page title: items saved before this check would
+    // otherwise keep "503 - Service Unavailable" forever, even on reprocess.
+    const keptTitle = item.title && !looksLikeUrl(item.title) && !isBlockedTitle(item.title) ? item.title : null;
     const title = (meta.title || keptTitle || displayTitleFor(link, item.source_domain)).slice(0, 512);
     const categoryId = await this.resolveCategoryId(item.user_id, cls.slug);
 
@@ -153,22 +191,73 @@ export class EnrichmentService {
     }
   }
 
+  /**
+   * Fetch OG metadata. Returns EMPTY_META — never a partial, never a block page's
+   * own title — when the site refuses us, so process() falls through to the derived
+   * label ("Amazon product") instead of saving "503 - Service Unavailable".
+   */
   private async fetchMetadata(url: string): Promise<Metadata> {
     try {
-      const res = await fetch(url, { headers: { 'User-Agent': 'TroveBot/1.0 (+https://trove.app)' }, signal: AbortSignal.timeout(8000) });
+      const res = await fetch(this.fetchTarget(url), {
+        headers: BROWSER_HEADERS,
+        redirect: 'follow',
+        signal: AbortSignal.timeout(this.scraperBaseUrl() ? 30000 : 8000),
+      });
+
+      // A block page still has a body and still parses; the status is the only
+      // honest signal, so trust it and stop.
+      if (!res.ok) {
+        this.logger.warn(`metadata ${res.status} for ${url} — using derived title`);
+        return EMPTY_META;
+      }
+
       const html = await res.text();
       const pick = (prop: string) => {
         const re = new RegExp(`<meta[^>]+(?:property|name)=["']${prop}["'][^>]+content=["']([^"']+)["']`, 'i');
         const m = html.match(re); return m ? this.decode(m[1]) : null;
       };
       const titleTag = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-      return {
-        title: pick('og:title') || (titleTag ? this.decode(titleTag[1]).trim() : null),
-        description: pick('og:description') || pick('description'),
-        image: pick('og:image'),
-      };
+      const title = pick('og:title') || (titleTag ? this.decode(titleTag[1]).trim() : null);
+
+      // Amazon serves its Robot Check with a 200, so the title is the tell. When it
+      // fires, drop description and image too — they belong to the block page.
+      if (isBlockedTitle(title)) {
+        this.logger.warn(`blocked page for ${url} ("${title}") — using derived title`);
+        return EMPTY_META;
+      }
+
+      return { title, description: pick('og:description') || pick('description'), image: pick('og:image') };
     } catch {
-      return { title: null, description: null, image: null };
+      return EMPTY_META;
+    }
+  }
+
+  private scraperBaseUrl(): string {
+    return (process.env.SCRAPER_API_URL || '').trim();
+  }
+
+  /**
+   * Optional scraping-API hook: with SCRAPER_API_URL set, every metadata fetch is
+   * routed through it, so Scrapfly/ScraperAPI/ScrapingBee can be plugged in by env
+   * alone. `{url}` and `{key}` placeholders are substituted if present (vendors
+   * disagree on parameter names); otherwise `url=` and `api_key=` are appended.
+   */
+  private fetchTarget(url: string): string {
+    const base = this.scraperBaseUrl();
+    if (!base) return url;
+    const key = (process.env.SCRAPER_API_KEY || '').trim();
+
+    if (base.includes('{url}') || base.includes('{key}')) {
+      return base.replace('{url}', encodeURIComponent(url)).replace('{key}', encodeURIComponent(key));
+    }
+    try {
+      const target = new URL(base);
+      target.searchParams.set('url', url);
+      if (key) target.searchParams.set('api_key', key);
+      return target.toString();
+    } catch {
+      this.warnOnce(`SCRAPER_API_URL is not a valid URL ("${base}") — fetching directly`);
+      return url;
     }
   }
 
