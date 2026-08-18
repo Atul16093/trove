@@ -16,6 +16,8 @@ export enum ItemMessages {
   NOT_FOUND = 'Item not found',
   OPENED = 'Opened',
   REPROCESSING = 'Re-sorting unfinished items',
+  REGENERATED = 'Summary regenerated',
+  NOT_REGENERABLE = 'Files have no AI summary to regenerate',
 }
 
 export enum CategoryMessages {

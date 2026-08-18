@@ -155,6 +155,25 @@ export class ItemService {
   }
 
   /**
+   * Re-run enrichment for one item and return the fresh row, so the drawer can show
+   * the new summary immediately. Unlike the sweep this awaits the work — the user is
+   * watching a spinner — and keeps the item's current category, since "regenerate
+   * summary" shouldn't refile something the user filed by hand.
+   *
+   * Files never went through enrichment, so there's nothing to regenerate for them.
+   */
+  async regenerate(userId: number, uuid: string) {
+    const row = await this.items.findByUuid(userId, uuid);
+    if (!row) return this.response.error(ResponseCode.NOT_FOUND, ItemMessages.NOT_FOUND);
+    if (row.kind === 'file') return this.response.error(ResponseCode.BAD_REQUEST, ItemMessages.NOT_REGENERABLE);
+
+    await this.enrichment.process(row.id, { keepCategory: true });
+    // process() writes through the query layer, so re-read rather than trusting `row`.
+    const fresh = await this.items.findByUuid(userId, uuid);
+    return this.response.success(ResponseCode.SUCCESS, ItemMessages.REGENERATED, await this.view(userId, fresh || row));
+  }
+
+  /**
    * Ingest a received file (PDF/doc) — e.g. a creator's rate card forwarded to
    * the Telegram bot. Content-hash dedupe; stored on disk; tagged by type and
    * sorted by filename (files are not sent to Claude).

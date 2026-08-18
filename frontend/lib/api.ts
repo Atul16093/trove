@@ -96,6 +96,9 @@ export const api = {
   openItem: (uuid: string) => request<{ openCount: number }>(`/items/${uuid}/open`, { method: 'POST' }),
   // Re-queues links that never finished enrichment (stuck processing / uncategorized).
   reprocessItems: () => request<{ queued: number }>('/items/reprocess', { method: 'POST' }),
+  // Re-runs enrichment for one link and waits for it, so the response carries the new
+  // summary. Slower than the other calls (metadata fetch + AI round trip) — show a spinner.
+  regenerateSummary: (uuid: string) => request<Item>(`/items/${uuid}/regenerate`, { method: 'POST' }),
 
   uploadFile: async (file: File, caption?: string): Promise<ApiResponse<Item>> => {
     const token = getToken();

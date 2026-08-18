@@ -42,6 +42,12 @@ export class ItemController {
     return this.items.remove(u.id, uuid);
   }
 
+  /** Re-runs enrichment for a single item; awaits it so the response has the new summary. */
+  @Post(':uuid/regenerate')
+  regenerate(@CurrentUser() u: AuthUser, @Param('uuid') uuid: string) {
+    return this.items.regenerate(u.id, uuid);
+  }
+
   @Post(':uuid/open')
   open(@CurrentUser() u: AuthUser, @Param('uuid') uuid: string) {
     return this.items.open(u.id, uuid);

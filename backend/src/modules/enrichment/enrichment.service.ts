@@ -3,7 +3,7 @@ import { ItemQuery } from '../../models/queries/item.query';
 import { CategoryQuery } from '../../models/queries/category.query';
 import { CATEGORY_SLUGS, FALLBACK_CATEGORY_SLUG } from '../../enums/default-categories';
 import { unwrapRedirect, isInstagramUrl, displayTitleFor, looksLikeUrl } from '../../common/utils/url.util';
-import { AiConfig, complete, resolveAiConfig } from './ai-provider';
+import { AiConfig, AiError, complete, resolveAiConfig } from './ai-provider';
 
 interface Metadata { title: string | null; description: string | null; image: string | null; }
 interface Classification { slug: string; summary: string; tags: string[]; }
@@ -32,6 +32,20 @@ const BLOCKED_TITLE_PATTERNS: RegExp[] = [
   /attention required/i,     // Cloudflare block
 ];
 
+/**
+ * AI budget. 30s because Gemini's time-to-first-byte is regularly past 15s on the free
+ * tier; one retry, because a timeout there is usually transient rather than a real fault.
+ */
+const AI_TIMEOUT_MS = 30000;
+const AI_ATTEMPTS = 2;
+
+/**
+ * The answer itself is ~60 tokens, but a thinking model spends its budget reasoning
+ * first and only then starts emitting — at 300 it was being cut off mid-JSON. 1024
+ * leaves room for that without meaningfully changing cost. Override with AI_MAX_TOKENS.
+ */
+const AI_MAX_TOKENS = Number(process.env.AI_MAX_TOKENS) || 1024;
+
 /** Looks like a real browser; enough for marginal sites, nowhere near enough for Amazon. */
 const BROWSER_HEADERS: Record<string, string> = {
   'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
@@ -50,6 +64,39 @@ const BROWSER_HEADERS: Record<string, string> = {
  * fetch, a failed AI call or a login-wall page must never strand a saved
  * link where the dashboard can't see it.
  */
+/**
+ * Pull the first complete JSON object out of a model completion.
+ *
+ * Models fence their output (```json … ```), prepend "Sure, here's the JSON:", and
+ * sometimes append a closing remark. A naive first-`{`/last-`}` slice breaks on any
+ * trailing prose that contains a brace, so scan for the brace that actually balances
+ * — skipping over braces inside string literals, and respecting backslash escapes.
+ *
+ * Throws with a distinguishable message when the object never closes, because that
+ * means the completion was truncated (usually maxOutputTokens), not malformed.
+ */
+export function extractJsonObject(raw: string): string {
+  // Drop fence markers wherever they sit: ```json, ```, ~~~ — opening and closing alike.
+  const text = raw.replace(/[`~]{3,}[a-z]*/gi, '').trim();
+
+  const start = text.indexOf('{');
+  if (start === -1) throw new Error('no JSON object in completion');
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (escaped) { escaped = false; continue; }
+    if (ch === '\\' && inString) { escaped = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{') depth++;
+    else if (ch === '}' && --depth === 0) return text.slice(start, i + 1);
+  }
+  throw new Error('JSON object never closes — completion looks truncated (raise maxOutputTokens?)');
+}
+
 /** True for a title that came from a bot-block / error page rather than the content. */
 function isBlockedTitle(title: string | null): boolean {
   if (!title) return false;
@@ -69,8 +116,12 @@ export class EnrichmentService {
     setImmediate(() => this.process(itemId).catch((e) => this.logger.error(`enrich ${itemId}: ${e.message}`)));
   }
 
-  /** Public so the reprocess sweep can re-run a stranded item. */
-  async process(itemId: number): Promise<void> {
+  /**
+   * Public so the reprocess sweep and the per-item "regenerate" action can re-run
+   * an item. `keepCategory` protects a filing the user chose by hand — regenerating
+   * a summary must not silently move the item out of the category they put it in.
+   */
+  async process(itemId: number, opts: { keepCategory?: boolean } = {}): Promise<void> {
     const item = await this.items.findById(itemId);
     if (!item || item.kind === 'file') return; // files are enriched at ingest, not here
     const stored = item.canonical_url || item.url;
@@ -102,7 +153,9 @@ export class EnrichmentService {
     // otherwise keep "503 - Service Unavailable" forever, even on reprocess.
     const keptTitle = item.title && !looksLikeUrl(item.title) && !isBlockedTitle(item.title) ? item.title : null;
     const title = (meta.title || keptTitle || displayTitleFor(link, item.source_domain)).slice(0, 512);
-    const categoryId = await this.resolveCategoryId(item.user_id, cls.slug);
+    const categoryId = opts.keepCategory && item.category_id
+      ? item.category_id
+      : await this.resolveCategoryId(item.user_id, cls.slug);
 
     try {
       await this.items.updateEnrichment(itemId, {
@@ -269,6 +322,10 @@ export class EnrichmentService {
    * Ask the configured provider to categorize the link; fall back to keywords on any
    * failure. Config is resolved per call so an env change lands on the next restart
    * without special-casing, and a bad AI_PROVIDER degrades instead of crashing boot.
+   *
+   * A timed-out call is retried once — free-tier Gemini stalls often enough that one
+   * retry is the difference between a real summary and a keyword stub. Everything
+   * else (auth, bad format, safety block) fails fast: retrying won't change the answer.
    */
   private async classify(url: string, meta: Metadata, caption: string | null): Promise<Classification> {
     let cfg: AiConfig | null = null;
@@ -279,40 +336,70 @@ export class EnrichmentService {
     }
     if (!cfg) return this.keywordFallback(url, meta, caption);
 
-    try {
-      const text = await complete(cfg, this.classifyPrompt(url, meta, caption), { maxTokens: 300, timeoutMs: 15000 });
-      return this.parseClassification(text);
-    } catch (e: any) {
-      // Rate limits and bad keys look identical from the item's point of view, but not
-      // from the operator's — log once per distinct message so a misconfigured free-tier
-      // key is visible without flooding the log on every save.
-      this.warnOnce(`ai classify (${cfg.provider}/${cfg.model}) failed: ${e.message}`);
-      return this.keywordFallback(url, meta, caption);
+    const prompt = this.classifyPrompt(url, meta, caption);
+    for (let attempt = 1; attempt <= AI_ATTEMPTS; attempt++) {
+      // Held outside the try so a parse failure can report what the model actually said.
+      let raw = '';
+      try {
+        raw = await complete(cfg, prompt, { maxTokens: AI_MAX_TOKENS, timeoutMs: AI_TIMEOUT_MS });
+        if (attempt > 1) this.logger.log(`ai classify succeeded on retry (${cfg.provider}/${cfg.model})`);
+        return this.parseClassification(raw);
+      } catch (e: any) {
+        const retryable = e instanceof AiError && e.aborted && attempt < AI_ATTEMPTS;
+        this.logAiFailure(e, attempt, retryable, raw);
+        if (!retryable) break;
+      }
     }
+    return this.keywordFallback(url, meta, caption);
+  }
+
+  /**
+   * Log enough to tell a timeout from a 401 from a malformed request. Logged every
+   * time rather than deduped: when the AI is failing, the frequency is the signal.
+   */
+  private logAiFailure(e: any, attempt: number, willRetry: boolean, raw = ''): void {
+    const tail = willRetry ? ' — retrying once' : ' — falling back to keyword summary';
+    if (e instanceof AiError) {
+      if (e.aborted) {
+        this.logger.warn(`ai classify attempt ${attempt} timed out: ${e.message}${tail}`);
+        return;
+      }
+      // status + body are already folded into the message by complete().
+      this.logger.warn(`ai classify attempt ${attempt} failed: ${e.message}${tail}`);
+      return;
+    }
+    // Not an AiError, so the call succeeded and the parse didn't. The model's own words
+    // are the only way to tell a fenced response from a refusal from a truncation.
+    const sample = raw ? ` — raw output (first 300 chars): ${JSON.stringify(raw.slice(0, 300))}` : '';
+    this.logger.warn(`ai classify attempt ${attempt} could not parse response: ${e?.message || e}${tail}${sample}`);
   }
 
   /** Identical across providers — the JSON contract is the abstraction boundary. */
   private classifyPrompt(url: string, meta: Metadata, caption: string | null): string {
     const context = [`URL: ${url}`, meta.title && `Title: ${meta.title}`, meta.description && `Description: ${meta.description}`, caption && `Caption: ${caption}`]
       .filter(Boolean).join('\n');
-    return `You categorize saved links. Reply with ONLY a JSON object, no prose, no markdown fences.
-Schema: {"category": one of ${JSON.stringify(CATEGORY_SLUGS)}, "summary": "one concise sentence, max 20 words", "tags": ["2-4 short lowercase tags"]}
-If nothing fits, use "${FALLBACK_CATEGORY_SLUG}".
+    return `You categorize saved links.
+Reply with ONLY a raw JSON object. No prose, no explanation, no markdown code fences.
+
+Required shape — exactly these three keys:
+{"category": "<one of ${JSON.stringify(CATEGORY_SLUGS)}>", "summary": "<one concise sentence, max 20 words>", "tags": ["<2-4 short lowercase tags>"]}
+
+Rules:
+- "category" MUST be one of the listed slugs verbatim. If nothing fits, use "${FALLBACK_CATEGORY_SLUG}".
+- "summary" is a single sentence describing what the link is.
+- "tags" is an array of 2-4 short lowercase strings.
 
 Link:
 ${context}`;
   }
 
   /**
-   * Small models wrap JSON in fences or a sentence of preamble far more often than
-   * Claude does, so recover the first {...} block rather than trusting the whole string.
+   * Enforce the {category, summary, tags} contract on whatever the model returned.
+   * Extraction is lenient (fences, preamble); the shape check is not — an unknown
+   * category becomes "other" rather than a category id that doesn't exist.
    */
   private parseClassification(text: string): Classification {
-    const cleaned = text.replace(/```(?:json)?/gi, '').trim();
-    const start = cleaned.indexOf('{');
-    const end = cleaned.lastIndexOf('}');
-    if (start === -1 || end <= start) throw new Error('no JSON object in completion');
-    const json = JSON.parse(cleaned.slice(start, end + 1));
+    const json = JSON.parse(extractJsonObject(text));
 
     const slug = CATEGORY_SLUGS.includes(json.category) ? json.category : FALLBACK_CATEGORY_SLUG;
     return {

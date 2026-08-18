@@ -3,7 +3,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Search, Plus, X, ExternalLink, Trash2, Send, Menu, Settings2, GripVertical,
-  Check, Clock, ChevronDown, Clock3, EyeOff, Inbox, LogOut, FileText, Paperclip, Download, Copy,
+  Check, Clock, ChevronDown, Clock3, EyeOff, Inbox, LogOut, FileText, Paperclip, Download, Copy, RefreshCw,
 } from 'lucide-react';
 import { api, getToken, clearToken, Item, ItemPatch, Category } from '@/lib/api';
 import { Logo } from '@/components/Logo';
@@ -160,6 +160,20 @@ export default function Dashboard() {
     setItems((prev) => prev.map((x) => (x.uuid === updated.uuid ? updated : x)));
     setSelected((cur) => (cur && cur.uuid === updated.uuid ? updated : cur));
     flash(note);
+  };
+
+  /**
+   * Re-run enrichment for one item. The request is slow (metadata fetch + AI call),
+   * so the drawer owns the spinner and this just swaps the fresh row in on return.
+   */
+  const regenerate = async (it: Item): Promise<boolean> => {
+    const res = await api.regenerateSummary(it.uuid);
+    if (!res.data) { flash(res.message || 'Could not regenerate'); return false; }
+    const updated = res.data;
+    setItems((prev) => prev.map((x) => (x.uuid === updated.uuid ? updated : x)));
+    setSelected((cur) => (cur && cur.uuid === updated.uuid ? updated : cur));
+    flash(updated.summary ? 'Summary regenerated' : 'No summary could be generated');
+    return true;
   };
 
   /** Recategorize in place — used by both the row chip and the drawer select. */
@@ -330,6 +344,7 @@ export default function Dashboard() {
             onCopy={() => copyLink(selected)}
             onRemove={() => remove(selected)}
             onPatch={patchItem}
+            onRegenerate={() => regenerate(selected)}
           />
         </>
       )}
@@ -372,15 +387,17 @@ function humanSize(bytes: number | null): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function DetailDrawer({ it, cats, onClose, onOpen, onMove, onCopy, onRemove, onPatch }: {
+function DetailDrawer({ it, cats, onClose, onOpen, onMove, onCopy, onRemove, onPatch, onRegenerate }: {
   it: Item; cats: Category[];
   onClose: () => void; onOpen: () => void; onMove: (categoryUuid: string) => void;
   onCopy: () => void; onRemove: () => void;
   onPatch: (it: Item, patch: ItemPatch, note: string) => void;
+  onRegenerate: () => Promise<boolean>;
 }) {
   const [note, setNote] = useState(it.note || '');
   const [tagDraft, setTagDraft] = useState('');
   const [imgBroken, setImgBroken] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
   const color = it.category?.color || UNSORTED_COLOR;
   const tags = it.tags || [];
 
@@ -398,6 +415,12 @@ function DetailDrawer({ it, cats, onClose, onOpen, onMove, onCopy, onRemove, onP
     onPatch(it, { tags: [...tags, t] }, 'Tag added');
   };
   const dropTag = (t: string) => onPatch(it, { tags: tags.filter((x) => x !== t) }, 'Tag removed');
+
+  const regenerate = async () => {
+    if (regenerating) return;
+    setRegenerating(true);
+    try { await onRegenerate(); } finally { setRegenerating(false); }
+  };
 
   return (
     <aside className="tv-drawer">
@@ -472,7 +495,25 @@ function DetailDrawer({ it, cats, onClose, onOpen, onMove, onCopy, onRemove, onP
         )}
       </div>
 
-      {it.summary && <div className="tv-field"><label>Summary</label><p className="tv-summary">{it.summary}</p></div>}
+      {/* Always rendered for links, even with no summary yet — the empty state is
+          where the regenerate button is most useful. Files never had one to begin with. */}
+      {it.kind !== 'file' && (
+        <div className="tv-field">
+          <div className="tv-field-head">
+            <label>Summary</label>
+            <button className="tv-regen" onClick={regenerate} disabled={regenerating}
+              title="Re-fetch the page and ask the AI again">
+              <RefreshCw size={12} className={regenerating ? 'tv-spin' : undefined} />
+              {regenerating ? 'Regenerating…' : 'Regenerate'}
+            </button>
+          </div>
+          {regenerating
+            ? <p className="tv-summary tv-summary-wait">Re-reading the page and rewriting the summary…</p>
+            : it.summary
+              ? <p className="tv-summary">{it.summary}</p>
+              : <p className="tv-summary tv-summary-none">No summary yet — regenerate to try again.</p>}
+        </div>
+      )}
 
       <button className="tv-delete" onClick={onRemove}><Trash2 size={14} /> Remove from Trove</button>
     </aside>
@@ -1113,6 +1154,17 @@ const CSS = `
 .tv-tagadd::placeholder{color:var(--label-3);}
 .tv-tagadd:focus{background:var(--surface);box-shadow:0 0 0 4px var(--accent-ring);}
 .tv-summary{font-size:14px;color:var(--label-2);line-height:1.6;}
+.tv-summary-none,.tv-summary-wait{color:var(--label-3);}
+.tv-summary-wait{animation:tv-pulse 1.4s var(--ease) infinite;}
+.tv-field-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:9px;}
+.tv-field-head label{margin-bottom:0;}
+.tv-regen{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 10px;
+  border-radius:var(--r-pill);background:var(--fill-2);color:var(--label-2);
+  font-size:11.5px;font-weight:600;letter-spacing:-0.01em;
+  transition:background var(--dur-fast) var(--ease),color var(--dur-fast) var(--ease);}
+.tv-regen:hover:not(:disabled){background:var(--fill-3);color:var(--label);}
+.tv-regen:disabled{opacity:.6;cursor:default;}
+.tv-spin{animation:tv-spin 1s linear infinite;}
 .tv-delete{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;height:44px;margin-top:30px;
   border-radius:var(--r-pill);background:var(--danger-soft);color:var(--danger);font-size:14px;font-weight:600;}
 .tv-delete:hover{background:var(--danger-soft-2);}
@@ -1148,6 +1200,7 @@ const CSS = `
 @keyframes tv-fade{from{opacity:0;}to{opacity:1;}}
 @keyframes tv-pop{from{opacity:0;transform:scale(.94);}to{opacity:1;transform:scale(1);}}
 @keyframes tv-pulse{0%,100%{opacity:1;}50%{opacity:.45;}}
+@keyframes tv-spin{to{transform:rotate(360deg);}}
 @keyframes tv-drawer-in{from{transform:translateX(calc(100% + 16px));}to{transform:translateX(0);}}
 @keyframes tv-modal-in{from{opacity:0;transform:translate(-50%,-50%) scale(.94);}to{opacity:1;transform:translate(-50%,-50%) scale(1);}}
 @keyframes tv-toast-in{from{opacity:0;transform:translateX(-50%) translateY(12px);}to{opacity:1;transform:translateX(-50%) translateY(0);}}
